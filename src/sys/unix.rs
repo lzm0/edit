@@ -10,6 +10,7 @@ use std::ffi::{CStr, c_int, c_void};
 use std::fs::{self, File};
 use std::mem::{self, ManuallyDrop, MaybeUninit};
 use std::os::fd::{AsRawFd as _, FromRawFd as _};
+use std::path::Path;
 use std::ptr::{self, NonNull, null_mut};
 use std::{thread, time};
 
@@ -350,8 +351,13 @@ pub struct FileId {
     st_ino: libc::ino_t,
 }
 
-/// Returns a unique identifier for the given file.
-pub fn file_id(file: &File) -> apperr::Result<FileId> {
+/// Returns a unique identifier for the given file by handle or path.
+pub fn file_id(file: Option<&File>, path: &Path) -> apperr::Result<FileId> {
+    let file = match file {
+        Some(f) => f,
+        None => &File::open(path)?,
+    };
+
     unsafe {
         let mut stat = MaybeUninit::<libc::stat>::uninit();
         check_int_return(libc::fstat(file.as_raw_fd(), stat.as_mut_ptr()))?;
@@ -515,7 +521,7 @@ where
     if suffix.is_empty() {
         name
     } else {
-        // SAFETY: In this particualar case we know that the string
+        // SAFETY: In this particular case we know that the string
         // is valid UTF-8, because it comes from icu.rs.
         let name = unsafe { name.to_str().unwrap_unchecked() };
 
@@ -534,10 +540,16 @@ pub fn preferred_languages(arena: &Arena) -> Vec<ArenaString<'_>, &Arena> {
     let mut locales = Vec::new_in(arena);
 
     for key in ["LANGUAGE", "LC_ALL", "LANG"] {
-        if let Ok(val) = std::env::var(key) {
-            locales.extend(
-                val.split(':').filter(|s| !s.is_empty()).map(|s| ArenaString::from_str(arena, s)),
-            );
+        if let Ok(val) = std::env::var(key)
+            && !val.is_empty()
+        {
+            locales.extend(val.split(':').filter(|s| !s.is_empty()).map(|s| {
+                // Replace all underscores with dashes,
+                // because the localization code expects pt-br, not pt_BR.
+                let mut res = Vec::new_in(arena);
+                res.extend(s.as_bytes().iter().map(|&b| if b == b'_' { b'-' } else { b }));
+                unsafe { ArenaString::from_utf8_unchecked(res) }
+            }));
             break;
         }
     }
