@@ -11,7 +11,7 @@ use std::path::{Component, MAIN_SEPARATOR_STR, Path, PathBuf};
 pub fn normalize(path: &Path) -> PathBuf {
     debug_assert!(path.is_absolute());
 
-    let mut res = PathBuf::with_capacity(path.as_os_str().len());
+    let mut res = PathBuf::with_capacity(path.as_os_str().as_encoded_bytes().len());
     let mut root_len = 0;
 
     for component in path.components() {
@@ -19,27 +19,23 @@ pub fn normalize(path: &Path) -> PathBuf {
             Component::Prefix(p) => res.push(p.as_os_str()),
             Component::RootDir => {
                 res.push(OsStr::new(MAIN_SEPARATOR_STR));
-                root_len = res.as_os_str().len();
+                root_len = res.as_os_str().as_encoded_bytes().len();
             }
             Component::CurDir => {}
             Component::ParentDir => {
-                // Get length up to the parent directory and truncate, but ensure we don't pop the root directory.
-                // NB: this compares the system-dependent "encoded length" as discussed in OsString's documentation.
-                if let Some(parent) = res.parent()
-                    && parent.as_os_str().len() >= root_len
+                // Get the length up to the parent directory
+                if let Some(len) = res
+                    .parent()
+                    .map(|p| p.as_os_str().as_encoded_bytes().len())
+                    // Ensure we don't pop the root directory
+                    && len >= root_len
                 {
-                    // To actually truncate the OsString, convert it to raw bytes first, truncate the Vec, then convert
-                    // it back.
-                    // [FIXME] Can be replaced with a plain `res.as_mut_os_string().truncate(parent_len)` once
-                    // `os_string_truncate` is stabilized (#133262)
-                    let byte_len = parent.as_os_str().as_encoded_bytes().len();
+                    // Pop the last component from `res`.
+                    //
+                    // [FIXME] Can be replaced with a plain `res.as_mut_os_string().truncate(len)`
+                    // once `os_string_truncate` is stabilized (#133262).
                     let mut bytes = res.into_os_string().into_encoded_bytes();
-                    bytes.truncate(byte_len);
-                    // SAFETY: All encoding concerns of `OsString` are met:
-                    // - the provided bytes came directly from a known-to-be-valid `OsStr`, `res`.
-                    // - since `parent` is also a valid `OsStr`, trimming at its byte length must also be at a valid
-                    //   boundary.
-                    // This is very similar to the example from `OsStr::from_encoded_bytes_unchecked`'s documentation.
+                    bytes.truncate(len);
                     res = PathBuf::from(unsafe { OsString::from_encoded_bytes_unchecked(bytes) });
                 }
             }
